@@ -3,30 +3,41 @@ from hstest.test_case import TestCase
 from hstest.check_result import CheckResult
 from threading import Thread
 from time import sleep
-from itertools import product
 import socket
 import random
+import json
 
 CheckResult.correct = lambda: CheckResult(True, '')
 CheckResult.wrong = lambda feedback: CheckResult(False, feedback)
 
-abc = 'abcdefghijklmnopqrstuvwxyz1234567890'
+abc = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
 
 
-def generate_password():
-    index = 1
-    while True:
-        abc = 'abcdefghijklmnopqrstuvwxyz1234567890'
-        yield from product(abc, repeat=index)
-        index += 1
+logins_list = [
+    'admin', 'Admin', 'admin1', 'admin2', 'admin3',
+    'user1', 'user2', 'root', 'default', 'new_user',
+    'some_user', 'new_admin', 'administrator',
+    'Administrator', 'superuser', 'super', 'su', 'alex',
+    'suser', 'rootuser', 'adminadmin', 'useruser',
+    'superadmin', 'username', 'username1'
+]
+
+
+def logins():
+    for login in logins_list:
+        yield login
 
 
 def random_password():
-    '''function - generating random password of length from 2 to 3'''
-    return ''.join(random.choice(abc) for i in range(random.randint(2, 3)))
+    '''function - generating random password of length from 6 to 10'''
+    return ''.join(random.choice(abc) for i in range(random.randint(6, 10)))
 
 
-class Hacking(StageTest):
+def random_login():
+    return random.choice(list(logins()))
+
+
+class TimeVulnerability(StageTest):
 
     def __init__(self, module):
         super().__init__(module)
@@ -36,6 +47,7 @@ class Hacking(StageTest):
         self.connected = False
         self.message = []
         self.password = None
+        self.login = None
 
     def start_server(self):
         self.serv = Thread(target=lambda: self.server())
@@ -60,20 +72,35 @@ class Hacking(StageTest):
         try:
             self.sock.listen(1)
             conn, addr = self.sock.accept()
-            self.connected = True
             conn.settimeout(15)
             while True:
                 data = conn.recv(1024)
                 self.message.append(data.decode('utf8'))
-                if len(self.message) > 1_000_000:
-                    conn.send('Too many attempts to connect!'.encode('utf8'))
+                self.connected = True
+                if len(self.message) > 100_000_000:
+                    conn.send(json.dumps({'result': 'Too many attempts to connect!'}).encode('utf8'))
                     break
                 if not data:
                     break
-                if data.decode('utf8') == self.password:
-                    conn.send('Connection success!'.encode('utf8'))
+
+                try:
+                    login_ = json.loads(data.decode('utf8'))['login']
+                    password_ = json.loads(data.decode('utf8'))['password']
+                except:
+                    conn.send(json.dumps({'result': 'Bad request!'}).encode('utf8'))
+                    continue
+
+                if login_ == self.login:
+                    if self.password == password_:
+                        conn.send(json.dumps({'result': 'Connection success!'}).encode('utf8'))
+                        break
+                    elif self.password.startswith(password_):
+                        sleep(0.1)
+                        conn.send(json.dumps({'result': 'Wrong password!'}).encode('utf8'))
+                    else:
+                        conn.send(json.dumps({'result': 'Wrong password!'}).encode('utf8'))
                 else:
-                    conn.send('Wrong password!'.encode('utf8'))
+                    conn.send(json.dumps({'result': 'Wrong login!'}).encode('utf8'))
             conn.close()
         except:
             pass
@@ -81,36 +108,71 @@ class Hacking(StageTest):
     def generate(self):
         self.message = []
         self.password = random_password()
+        self.login = random_login()
         self.start_server()
         return [
             TestCase(args=['localhost', '9090'],
-                     attach=[self.password], time_limit=25000)
+                     attach=[self.password, self.login])
         ]
 
     def check(self, reply, attach):
+        self.stop_server()
 
         if not self.connected:
             return CheckResult.wrong("You didn't connect to the server")
 
-        real_password = attach[0]
-        if reply.split('\n')[0] != real_password:
-            return CheckResult.wrong(f'The password you printed is not correct. The password is "{real_password}"')
-        success = True
-        for i in generate_password():
-            if len(i) == len(real_password):
-                break
-            try:
-                self.message.remove(''.join(i))
-            except ValueError:
-                success = False
-                break
-        if success:
+        real_password, real_login = attach
+        try:
+            json_reply = json.loads(reply)
+        except:
+            return CheckResult.wrong(
+                'The output of your program is not a valid JSON:\n' + reply
+            )
+        try:
+            password = json_reply['password']
+        except KeyError:
+            return CheckResult.wrong(
+                'The output of your program did not contain the field "password":\n' + reply
+            )
+        except TypeError:
+            return CheckResult.wrong(
+                'The output of your program did not contain the field "password":\n' + reply
+            )
+        try:
+            login = json_reply['login']
+        except KeyError:
+            return CheckResult.wrong(
+                'The output of your program did not contain the field "login":\n' + reply
+            )
+        except TypeError:
+            return CheckResult.wrong(
+                'The output of your program did not contain the field "login":\n' + reply
+            )
+        if login != real_login:
+            return CheckResult.wrong('The login you printed is not correct')
+        elif password != real_password:
+            return CheckResult.wrong('The password you printed is not correct')
+        find_first_letter = False
+        for i in self.message:
+            log = json.loads(i)['login']
+            pas = json.loads(i)['password']
+            if find_first_letter is False and len(pas) == 1 and log == real_login and real_password.startswith(pas):
+                find_first_letter = True
+            if find_first_letter is True:
+                if log != real_login:
+                    return CheckResult.wrong('You should find a correct login and then use only it')
+                if pas[0] != real_password[0]:
+                    return CheckResult.wrong(
+                        'When you find a first letter you should then start your passwords with it')
+            if len(pas) > 1:
+                if pas[0:-1] != real_password[0:len(pas[0:-1]) - 1]:
+                    return CheckResult.wrong(
+                        'You have already found the first %d letters of the password. Use them as a beginning' % len(
+                            pas[0:-1]))
             return CheckResult.correct()
-        return CheckResult.wrong(
-            'Your generator algorithm does not include all the variants')
 
 
 if __name__ == '__main__':
-    test = Hacking('hacking.hack')
+    test = TimeVulnerability('hacking.hack')
     test.run_tests()
     test.stop_server()

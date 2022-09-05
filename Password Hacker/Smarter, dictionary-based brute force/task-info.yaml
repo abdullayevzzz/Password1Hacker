@@ -134,6 +134,15 @@ files:
         test.run_tests()
         test.stop_server()
   learner_created: false
+- name: hacking/passwords.txt
+  visible: true
+  learner_created: true
+- name: passwords.txt
+  visible: true
+  learner_created: true
 feedback_link: https://hyperskill.org/learn/step/7218#comment
-status: Unchecked
-record: -1
+status: Solved
+feedback:
+  message: Congratulations!
+  time: Fri, 02 Sep 2022 13:29:33 UTC
+record: 3
